@@ -28,6 +28,7 @@ struct pmap_struct {
 };
 
 #define SYSFS_HIBERNATION_FILE	"/sys/devices/system/power/hibernate"
+#define SYSFS_MIGRATION_FILE	"/sys/kernel/mobility/migration"
 
 static struct pmap_struct *plist;
 static int action = 0;
@@ -559,11 +560,45 @@ valid_pmig_options(struct options *opts)
 
 int do_migration(uint64_t stream_val)
 {
-	int rc;
+	int rc, fd;
+	int kern_mobility = 0;
+	char buf[64];
 
-	say(DEBUG, "about to issue ibm,suspend-me(%llx)\n", stream_val);
-	rc = rtas_suspend_me(stream_val);
-	say(DEBUG, "ibm,suspend-me() returned %d\n", rc);
+	/* If the kernel can also do the device tree update we should let the kernel do all the work.
+	   Check if sysfs migration file is readable and returns 1. Otherwise, invoke suspend-me via
+	   rtas and we will do postmobility fixup ourself. */
+	rc = get_int_attribute(SYSFS_MIGRATION_FILE, NULL, &kern_mobility, sizeof(&kern_mobility));
+	if (rc)
+		say(DEBUG,"get_int_attribute returned %d for path %s\n", rc, SYSFS_MIGRATION_FILE);
+
+	if (!kern_mobility) {
+		say(DEBUG, "about to issue ibm,suspend-me(%llx)\n", stream_val);
+		rc = rtas_suspend_me(stream_val);
+		say(DEBUG, "ibm,suspend-me() returned %d\n", rc);
+	} else {
+		sprintf(buf, "0x%llx\n", stream_val);
+
+		fd = open(SYSFS_MIGRATION_FILE, O_WRONLY);
+		if (fd == -1) {
+			say(ERROR, "Could not open \"%s\" to initiate migration, "
+			    "%m\n", SYSFS_MIGRATION_FILE);
+			return -1;
+		}
+
+		say(DEBUG, "Initiating migration via %s with %s\n",
+		    SYSFS_MIGRATION_FILE, buf);
+
+		rc = write(fd, buf, strlen(buf));
+		if (rc < 0) {
+			say(DEBUG, "Write to migration file failed with rc: %d\n", rc);
+			rc = errno;
+		} else if (rc > 0)
+			rc = 0;
+
+		close(fd);
+		say(DEBUG, "Kernel migration returned %d\n", rc);
+	}
+
 	return rc;
 }
 
@@ -604,9 +639,9 @@ void post_mobility_update(int action)
 	char *path;
 
 	if (action == HIBERNATE)
-		path = "/sys/devices/system/power/hibernate";
+		path = SYSFS_HIBERNATION_FILE;
 	else
-		path = "/sys/kernel/mobility/migrate";
+		path = SYSFS_MIGRATION_FILE;
 
 	/* kernel will return 0 or sysfs attribute will be unreadable if drmgr
 	   needs to perform a device tree update */
