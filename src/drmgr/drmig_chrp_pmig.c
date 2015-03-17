@@ -29,6 +29,12 @@ struct pmap_struct {
 
 #define SYSFS_HIBERNATION_FILE	"/sys/devices/system/power/hibernate"
 #define SYSFS_MIGRATION_FILE	"/sys/kernel/mobility/migration"
+#define SYSFS_MIGRATION_API_FILE "/sys/kernel/mobility/api_version"
+
+/* drmgr must call ibm,suspend-me and is responsible for postmobility fixups */
+#define MIGRATION_API_V0	0
+/* drmgr must write to sysfs migration store and allow kernel to do postmobility fixups */
+#define MIGRATION_API_V1	1
 
 static struct pmap_struct *plist;
 static int action = 0;
@@ -561,21 +567,21 @@ valid_pmig_options(struct options *opts)
 int do_migration(uint64_t stream_val)
 {
 	int rc, fd;
-	int kern_mobility = 0;
+	int api_level = 0;
 	char buf[64];
 
 	/* If the kernel can also do the device tree update we should let the kernel do all the work.
-	   Check if sysfs migration file is readable and returns 1. Otherwise, invoke suspend-me via
-	   rtas and we will do postmobility fixup ourself. */
-	rc = get_int_attribute(SYSFS_MIGRATION_FILE, NULL, &kern_mobility, sizeof(&kern_mobility));
+	   Check if sysfs migration api_version is readable and use api level to determine how to
+	   perform migration and post-mobility updates. */
+	rc = get_int_attribute(SYSFS_MIGRATION_API_FILE, NULL, &api_level, sizeof(&api_level));
 	if (rc)
-		say(DEBUG,"get_int_attribute returned %d for path %s\n", rc, SYSFS_MIGRATION_FILE);
+		say(DEBUG,"get_int_attribute returned %d for path %s\n", rc, SYSFS_MIGRATION_API_FILE);
 
-	if (!kern_mobility) {
+	if (api_level == MIGRATION_API_V0) {
 		say(DEBUG, "about to issue ibm,suspend-me(%llx)\n", stream_val);
 		rc = rtas_suspend_me(stream_val);
 		say(DEBUG, "ibm,suspend-me() returned %d\n", rc);
-	} else {
+	} else if (api_level == MIGRATION_API_V1) {
 		sprintf(buf, "0x%llx\n", stream_val);
 
 		fd = open(SYSFS_MIGRATION_FILE, O_WRONLY);
@@ -597,6 +603,9 @@ int do_migration(uint64_t stream_val)
 
 		close(fd);
 		say(DEBUG, "Kernel migration returned %d\n", rc);
+	} else {
+		say(ERROR, "Unknown kernel migration api version %d\n", api_level);
+		rc = -1;
 	}
 
 	return rc;
