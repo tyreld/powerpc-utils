@@ -10,6 +10,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #define _GNU_SOURCE
 #include <getopt.h>
 
@@ -361,6 +362,18 @@ int main(int argc, char *argv[])
 	syslog(LOG_LOCAL0 | LOG_INFO, "%s", log_msg);
 	
 	say(DEBUG, "%s\n", log_msg);
+
+	if (getenv("DRMGR_PAUSE")) {
+		volatile int debug_break = 0;
+		pid_t pid = getpid();
+
+		sprintf(log_msg, "drmgr: (pid:%d) Paused awaiting debugger.\n", pid);
+		syslog(LOG_LOCAL0 | LOG_INFO, "%s", log_msg);
+		say(DEBUG, "%s", log_msg);
+
+		while (!debug_break)
+			sleep(5);
+	}
 
 	/* Now, using the actual command, call out to the proper handler */
 	rc = command->func(&opts);
